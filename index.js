@@ -1,26 +1,35 @@
 const axios = require("axios").default;
 const mysql = require("mysql");
+
+// cria uma conexão no mysql
 const connection = mysql.createConnection({
-  host: "localhost",
+  host: "127.0.0.1",
   port: 3306,
   user: "las",
   password: "admin",
   database: "las",
 });
 
+// cria um objeto do axios com url base (para não precisar)
+// ficar digitando o tempo todo o caminho inteiro
 const baseURL = "https://servicodados.ibge.gov.br/api/v1/localidades";
 const ibgeApi = axios.create({
   baseURL,
 });
 
+// obtém os estados do brasil na api
 function obterEstados() {
   return ibgeApi.get("/estados");
 }
 
+// insere os estados no banco
 function inserirEstado(UFs) {
   const sql = "INSERT INTO UFs SET ?";
   return connection.query(sql, UFs);
 }
+
+// obtém os municipios do estado e adiciona a sigla do estado
+// no objeto que é retornado
 function obterMunicipios(idEstado, siglaEstado) {
   const path = `/estados/${idEstado}/municipios`;
   return ibgeApi.get(path).then((resultado) => {
@@ -33,10 +42,28 @@ function obterMunicipios(idEstado, siglaEstado) {
     return municipios;
   });
 }
+
+// insere os municipios no banco (bulk insert)
 function inserirMunicipios(municipios) {
-  const sql = "INSERT INTO Municipios SET ?";
-  return connection.query(sql, municipios);
+  const sql = "INSERT INTO Municipios (id, siglaEstado, nome) VALUES ?";
+  return connection.query(sql, [
+    /** aqui ele extrai o id, sigla-estado e nome do municipio
+     * 
+     * ex: 
+     * entrada: [
+     *            { siglaEstado: "BA", id: 1, nome: "Salvador" }, 
+     *            { siglaEstado: "BA", id: 2, nome: "Pojuca" }
+     *          ]
+     * 
+     * saída: [[1, "BA", "Salvador"], [2, "BA", "Pojuca"]] 
+     *
+     * isso é feito para que possamos inserir no banco 
+     * todos os registros de uma só vez
+     *  */
+    municipios.map(item => [item.id, item.siglaEstado, item.nome])
+  ]);
 }
+
 
 async function main() {
   const resultado = [];
@@ -44,14 +71,26 @@ async function main() {
   const estados = (await obterEstados()).data;
   console.log("Estados retornados: ", estados.length);
   for (let i = 0; i < estados.length; i++) {
+    //utiliza o for para inserir o estado
+    //benefício: mais simples de implementar
+    //malefício: em caso de muitos registros, essa abordagem vai ser EXTREMAMENTE LENTA
     const { id, sigla } = estados[i];
     resultado.push(await inserirEstado({ id, sigla }));
+
+    //utiliza bulk insert para o municipio
+    //benefício: extremamente mais rápido de inserir no banco
+    //malefício: a primeira vista parece um pouco mais complexo
     const municipios = await obterMunicipios(id, sigla);
     console.log(`Municipios retornados para ${sigla} :`, municipios.length);
-    const resultadoMunicipios = await inserirMunicipios(municipios);
+    // insere os municipios no banco
+    await inserirMunicipios(municipios);
     console.log("Municipios inseridos com sucesso");
   }
   console.log("Registros inseridos: ", resultado.length);
 }
 
-main();
+main()
+  .then(_ => {
+    console.log("Inserção concluída com sucesso... Verifique o seu banco de dados!");
+    process.exit();
+  });
